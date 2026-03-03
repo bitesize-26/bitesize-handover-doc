@@ -1,11 +1,17 @@
-}
+{
   "name": "bitesize-handover-doc",
   "version": "1.0.0",
   "type": "module",
   "main": "server.js",
+  "engines": {
+    "node": "22.x"
+  },
+  "scripts": {
+    "start": "node server.js"
+  },
   "dependencies": {
-    "express": "^4.19.2",
+    "cors": "^2.8.5",
     "docx": "^8.5.0",
-    "cors": "^2.8.5"
+    "express": "^4.19.2"
   }
 }
