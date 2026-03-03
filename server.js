@@ -1,17 +1,28 @@
 import express from "express";
 import cors from "cors";
 import crypto from "crypto";
-import { Document, Packer, Paragraph, TextRun, HeadingLevel } from "docx";
+import fs from "fs";
+import path from "path";
+import {
+  Document,
+  Packer,
+  Paragraph,
+  TextRun,
+  HeadingLevel,
+  ImageRun,
+} from "docx";
 
 const app = express();
 app.use(cors());
 app.use(express.json({ limit: "5mb" }));
 
-/**
- * In-memory temp file store: token -> { buffer, mime, filename, expiresAt }
- * NOTE: On Render free tier, memory is ephemeral and resets on redeploy/sleep.
- * That’s fine for short-lived download links.
- */
+// ===== Branding =====
+const BRAND_PINK = "FF0087";
+const FONT_PRIMARY = "Abel"; // Will only render as Abel if installed on the viewer's machine.
+const LOGO_PATH = path.join(process.cwd(), "assets", "bitesize-logo.png");
+const logoImage = fs.readFileSync(LOGO_PATH);
+
+// ===== Temp download store (in-memory) =====
 const TEMP_TTL_MS = 15 * 60 * 1000; // 15 minutes
 const tempFiles = new Map();
 
@@ -22,7 +33,6 @@ function putTempFile({ buffer, mime, filename }) {
   return token;
 }
 
-// periodic cleanup
 setInterval(() => {
   const now = Date.now();
   for (const [token, meta] of tempFiles.entries()) {
@@ -30,31 +40,70 @@ setInterval(() => {
   }
 }, 60 * 1000).unref();
 
+// ===== Helpers =====
+function labelRun(text) {
+  return new TextRun({
+    text,
+    bold: true,
+    color: "000000",
+    font: FONT_PRIMARY,
+  });
+}
+
+function valueRun(text) {
+  return new TextRun({
+    text: text ?? "",
+    color: "000000",
+    font: FONT_PRIMARY,
+  });
+}
+
 function field(label, value) {
   return new Paragraph({
-    children: [
-      new TextRun({ text: `${label}: `, bold: true }),
-      new TextRun({ text: value ?? "" }),
-    ],
+    children: [labelRun(`${label}: `), valueRun(value ?? "")],
     spacing: { after: 120 },
   });
 }
 
 function sectionTitle(text) {
   return new Paragraph({
-    text,
-    heading: HeadingLevel.HEADING_2,
+    children: [
+      new TextRun({
+        text,
+        bold: true,
+        color: BRAND_PINK,
+        font: FONT_PRIMARY,
+        size: 28, // 14pt
+      }),
+    ],
     spacing: { before: 240, after: 120 },
   });
 }
 
 function divider() {
   return new Paragraph({
-    children: [new TextRun({ text: "______________________________________________________________" })],
+    children: [
+      new TextRun({
+        text: "______________________________________________________________",
+        color: "000000",
+        font: FONT_PRIMARY,
+      }),
+    ],
     spacing: { before: 80, after: 160 },
   });
 }
 
+function safeAsciiFilename(name) {
+  // Keep downloads reliable everywhere (no fancy punctuation)
+  const cleaned = String(name || "BiteSize")
+    .replace(/[^\w\s.-]/g, "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 80);
+  return cleaned ? `${cleaned} - BiteSize Handover.docx` : "BiteSize-Handover.docx";
+}
+
+// ===== Routes =====
 app.post("/generate-handover", async (req, res) => {
   try {
     const d = req.body;
@@ -72,9 +121,28 @@ app.post("/generate-handover", async (req, res) => {
       sections: [
         {
           children: [
+            // Logo
             new Paragraph({
-              text: "SUB-BRAND MARKETING HANDOVER",
-              heading: HeadingLevel.HEADING_1,
+              children: [
+                new ImageRun({
+                  data: logoImage,
+                  transformation: { width: 220, height: 70 },
+                }),
+              ],
+              spacing: { after: 160 },
+            }),
+
+            // Title
+            new Paragraph({
+              children: [
+                new TextRun({
+                  text: "SUB-BRAND MARKETING HANDOVER",
+                  bold: true,
+                  color: "000000",
+                  font: FONT_PRIMARY,
+                  size: 32, // 16pt
+                }),
+              ],
               spacing: { after: 240 },
             }),
 
@@ -140,10 +208,11 @@ app.post("/generate-handover", async (req, res) => {
 
     const buffer = await Packer.toBuffer(doc);
 
-    // Keep filename simple ASCII to avoid any header issues anywhere
-    const filename = "BiteSize-Handover.docx";
     const mime =
       "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+
+    // Provide a friendly filename, but keep it ASCII-safe
+    const filename = safeAsciiFilename(d.business_name);
 
     const token = putTempFile({ buffer, mime, filename });
 
@@ -177,7 +246,10 @@ app.get("/download/:token", (req, res) => {
   res.status(200);
   res.setHeader("Content-Type", meta.mime);
   res.setHeader("Content-Length", String(meta.buffer.length));
-  res.setHeader("Content-Disposition", 'attachment; filename="BiteSize-Handover.docx"');
+
+  // Keep header safe: fixed ASCII filename
+  res.setHeader("Content-Disposition", `attachment; filename="${meta.filename}"`);
+
   return res.end(meta.buffer);
 });
 
