@@ -1,13 +1,15 @@
 import express from "express";
 import cors from "cors";
 import { Document, Packer, Paragraph, TextRun, HeadingLevel } from "docx";
+
 function safeFilename(name) {
   return String(name || "BiteSize Handover")
-    .replace(/[^\w\s.-]/g, "")
-    .replace(/\s+/g, " ")
+    .replace(/[^\w\s.-]/g, "") // remove non-ascii/special chars
+    .replace(/\s+/g, " ")      // collapse whitespace
     .trim()
     .slice(0, 120) || "BiteSize Handover";
 }
+
 const app = express();
 app.use(cors());
 app.use(express.json({ limit: "2mb" }));
@@ -122,9 +124,15 @@ app.post("/generate-handover", async (req, res) => {
       "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
     );
 
+    // ✅ SAFE filename (no en-dash, no invalid header chars)
+    const safeBusiness = safeFilename(d.business_name);
+    const filename = `${safeBusiness} - BiteSize Handover.docx`;
+
     res.setHeader(
       "Content-Disposition",
-      `attachment; filename="${d.business_name} – BiteSize Handover.docx"`
+      `attachment; filename="${filename}"; filename*=UTF-8''${encodeURIComponent(
+        filename
+      )}`
     );
 
     res.send(buffer);
