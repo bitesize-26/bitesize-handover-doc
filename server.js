@@ -1,7 +1,13 @@
 import express from "express";
 import cors from "cors";
 import { Document, Packer, Paragraph, TextRun, HeadingLevel } from "docx";
-
+function safeFilename(name) {
+  return String(name || "BiteSize Handover")
+    .replace(/[^\w\s.-]/g, "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 120) || "BiteSize Handover";
+}
 const app = express();
 app.use(cors());
 app.use(express.json({ limit: "2mb" }));
