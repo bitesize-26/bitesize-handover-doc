@@ -1,10 +1,34 @@
 import express from "express";
 import cors from "cors";
+import crypto from "crypto";
 import { Document, Packer, Paragraph, TextRun, HeadingLevel } from "docx";
 
 const app = express();
 app.use(cors());
 app.use(express.json({ limit: "5mb" }));
+
+/**
+ * In-memory temp file store: token -> { buffer, mime, filename, expiresAt }
+ * NOTE: On Render free tier, memory is ephemeral and resets on redeploy/sleep.
+ * That’s fine for short-lived download links.
+ */
+const TEMP_TTL_MS = 15 * 60 * 1000; // 15 minutes
+const tempFiles = new Map();
+
+function putTempFile({ buffer, mime, filename }) {
+  const token = crypto.randomBytes(18).toString("hex");
+  const expiresAt = Date.now() + TEMP_TTL_MS;
+  tempFiles.set(token, { buffer, mime, filename, expiresAt });
+  return token;
+}
+
+// periodic cleanup
+setInterval(() => {
+  const now = Date.now();
+  for (const [token, meta] of tempFiles.entries()) {
+    if (!meta?.expiresAt || meta.expiresAt <= now) tempFiles.delete(token);
+  }
+}, 60 * 1000).unref();
 
 function field(label, value) {
   return new Paragraph({
@@ -115,19 +139,46 @@ app.post("/generate-handover", async (req, res) => {
     });
 
     const buffer = await Packer.toBuffer(doc);
-    const base64 = buffer.toString("base64");
+
+    // Keep filename simple ASCII to avoid any header issues anywhere
+    const filename = "BiteSize-Handover.docx";
+    const mime =
+      "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+
+    const token = putTempFile({ buffer, mime, filename });
+
+    const baseUrl = `${req.protocol}://${req.get("host")}`;
+    const download_url = `${baseUrl}/download/${token}`;
 
     return res.status(200).json({
       ok: true,
-      filename: "BiteSize-Handover.docx",
-      mime_type:
-        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-      file_base64: base64,
+      filename,
+      mime_type: mime,
+      download_url,
+      expires_in_seconds: Math.floor(TEMP_TTL_MS / 1000),
     });
   } catch (err) {
     console.error("generate-handover error:", err);
     return res.status(500).json({ ok: false, error: String(err?.message ?? err) });
   }
+});
+
+app.get("/download/:token", (req, res) => {
+  const { token } = req.params;
+  const meta = tempFiles.get(token);
+
+  if (!meta) return res.status(404).send("File expired or not found.");
+
+  if (meta.expiresAt <= Date.now()) {
+    tempFiles.delete(token);
+    return res.status(410).send("File expired.");
+  }
+
+  res.status(200);
+  res.setHeader("Content-Type", meta.mime);
+  res.setHeader("Content-Length", String(meta.buffer.length));
+  res.setHeader("Content-Disposition", 'attachment; filename="BiteSize-Handover.docx"');
+  return res.end(meta.buffer);
 });
 
 app.get("/health", (req, res) => res.json({ ok: true }));
